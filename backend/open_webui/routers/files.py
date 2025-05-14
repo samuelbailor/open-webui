@@ -81,7 +81,7 @@ def has_access_to_file(
 
 
 @router.post("/", response_model=FileModelResponse)
-def upload_file(
+async def upload_file(
     request: Request,
     file: UploadFile = File(...),
     user=Depends(get_verified_user),
@@ -149,7 +149,7 @@ def upload_file(
                         file_path = Storage.get_file(file_path)
                         result = transcribe(request, file_path)
 
-                        process_file(
+                        await process_file(
                             request,
                             ProcessFileForm(file_id=id, content=result.get("text", "")),
                             user=user,
@@ -162,12 +162,12 @@ def upload_file(
                         "video/ogg",
                         "video/quicktime",
                     ]:
-                        process_file(request, ProcessFileForm(file_id=id), user=user)
+                        await process_file(request, ProcessFileForm(file_id=id), user=user)
                 else:
                     log.info(
                         f"File type {file.content_type} is not provided, but trying to process anyway"
                     )
-                    process_file(request, ProcessFileForm(file_id=id), user=user)
+                    await process_file(request, ProcessFileForm(file_id=id), user=user)
 
                 file_item = Files.get_file_by_id(id=id)
             except Exception as e:
@@ -367,7 +367,7 @@ async def update_file_data_content_by_id(
         or has_access_to_file(id, "write", user)
     ):
         try:
-            process_file(
+            await process_file(
                 request,
                 ProcessFileForm(file_id=id, content=form_data.content),
                 user=user,
