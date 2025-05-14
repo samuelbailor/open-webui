@@ -52,8 +52,11 @@ class VectorSearchRetriever(BaseRetriever):
         *,
         run_manager: CallbackManagerForRetrieverRun,
     ) -> list[Document]:
+        # Ensure collection name is formatted consistently with how it's stored
+        formatted_collection_name = self.collection_name.replace("-", "_")
+        
         result = VECTOR_DB_CLIENT.search(
-            collection_name=self.collection_name,
+            collection_name=formatted_collection_name,
             vectors=[self.embedding_function(query, RAG_EMBEDDING_QUERY_PREFIX)],
             limit=self.top_k,
         )
@@ -77,9 +80,13 @@ def query_doc(
     collection_name: str, query_embedding: list[float], k: int, user: UserModel = None
 ):
     try:
-        log.debug(f"query_doc:doc {collection_name}")
+        # Ensure collection name is formatted consistently with how it's stored
+        # This matches the formatting in the vector db's insert method
+        formatted_collection_name = collection_name.replace("-", "_")
+        
+        log.debug(f"query_doc:doc {formatted_collection_name} (original: {collection_name})")
         result = VECTOR_DB_CLIENT.search(
-            collection_name=collection_name,
+            collection_name=formatted_collection_name,
             vectors=[query_embedding],
             limit=k,
         )
@@ -95,8 +102,11 @@ def query_doc(
 
 def get_doc(collection_name: str, user: UserModel = None):
     try:
-        log.debug(f"get_doc:doc {collection_name}")
-        result = VECTOR_DB_CLIENT.get(collection_name=collection_name)
+        # Ensure collection name is formatted consistently with how it's stored
+        formatted_collection_name = collection_name.replace("-", "_")
+        
+        log.debug(f"get_doc:doc {formatted_collection_name} (original: {collection_name})")
+        result = VECTOR_DB_CLIENT.get(collection_name=formatted_collection_name)
 
         if result:
             log.info(f"query_doc:result {result.ids} {result.metadatas}")
@@ -118,7 +128,10 @@ def query_doc_with_hybrid_search(
     r: float,
 ) -> dict:
     try:
-        log.debug(f"query_doc_with_hybrid_search:doc {collection_name}")
+        # Ensure collection name is formatted consistently with how it's stored
+        formatted_collection_name = collection_name.replace("-", "_")
+        
+        log.debug(f"query_doc_with_hybrid_search:doc {formatted_collection_name} (original: {collection_name})")
         bm25_retriever = BM25Retriever.from_texts(
             texts=collection_result.documents[0],
             metadatas=collection_result.metadatas[0],
@@ -126,7 +139,7 @@ def query_doc_with_hybrid_search(
         bm25_retriever.k = k
 
         vector_search_retriever = VectorSearchRetriever(
-            collection_name=collection_name,
+            collection_name=formatted_collection_name,
             embedding_function=embedding_function,
             top_k=k,
         )
@@ -324,8 +337,12 @@ def query_collection_with_hybrid_search(
             log.debug(
                 f"query_collection_with_hybrid_search:VECTOR_DB_CLIENT.get:collection {collection_name}"
             )
+            # Ensure collection name is formatted consistently with how it's stored
+            formatted_collection_name = collection_name.replace("-", "_")
+            
+            log.debug(f"Fetching collection {formatted_collection_name} (original: {collection_name})")
             collection_results[collection_name] = VECTOR_DB_CLIENT.get(
-                collection_name=collection_name
+                collection_name=formatted_collection_name
             )
         except Exception as e:
             log.exception(f"Failed to fetch collection {collection_name}: {e}")
