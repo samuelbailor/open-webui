@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Optional, Union
+from typing import Optional, Union, Any
 
 import requests
 import hashlib
@@ -10,6 +10,8 @@ from huggingface_hub import snapshot_download
 from langchain.retrievers import ContextualCompressionRetriever, EnsembleRetriever
 from langchain_community.retrievers import BM25Retriever
 from langchain_core.documents import Document
+from langchain_core.callbacks import CallbackManagerForRetrieverRun
+from langchain_core.retrievers import BaseRetriever
 
 from open_webui.config import VECTOR_DB
 from open_webui.retrieval.vector.connector import VECTOR_DB_CLIENT
@@ -34,11 +36,11 @@ from open_webui.config import (
 log = logging.getLogger(__name__)
 log.setLevel(SRC_LOG_LEVELS["RAG"])
 
+# Calculate these values once at module initialization
+WORKER_COUNT = int(os.getenv("UVICORN_WORKERS", "1"))
+SYSTEM_CORES = os.cpu_count() or 1
 
-from typing import Any
-
-from langchain_core.callbacks import CallbackManagerForRetrieverRun
-from langchain_core.retrievers import BaseRetriever
+log.info(f"Initializing retrieval utils with {WORKER_COUNT} workers, {SYSTEM_CORES} cores")
 
 
 class VectorSearchRetriever(BaseRetriever):
@@ -395,6 +397,32 @@ def query_collection_with_hybrid_search(
 
     return merge_and_sort_query_results(results, k=k)
 
+def calculate_resource_allocation(worker_count: int = WORKER_COUNT, system_cores: int = SYSTEM_CORES) -> dict:
+    """
+    Calculate optimal resource allocation based on system resources and worker count.
+    
+    Args:
+        worker_count: Number of worker processes (defaults to module-level WORKER_COUNT)
+        system_cores: Number of CPU cores available (defaults to module-level SYSTEM_CORES)
+        
+    Returns:
+        Dictionary with concurrency and thread pool size values
+    """
+    # Calculate cores per worker (minimum 1)
+    cores_per_worker = max(1, system_cores // worker_count)
+    
+    # Calculate concurrency - balance between throughput and resource contention
+    # We use a balanced approach that works well for both I/O and CPU bound operations
+    concurrency = max(2, min(cores_per_worker + 1, 6))
+    
+    # Calculate thread pool size - typically 2-3x concurrency is a good balance
+    # but capped based on available cores
+    thread_pool_size = max(5, min(concurrency * 2, cores_per_worker * 3))
+    
+    return {
+        "concurrency": concurrency,
+        "thread_pool_size": thread_pool_size
+    }
 
 def get_embedding_function(
     embedding_engine,
