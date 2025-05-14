@@ -1,6 +1,8 @@
 import logging
 import os
-from typing import Optional, Union, Any
+import asyncio
+import concurrent.futures
+from typing import Optional, Union, List, Any
 
 import requests
 import hashlib
@@ -423,6 +425,82 @@ def calculate_resource_allocation(worker_count: int = WORKER_COUNT, system_cores
         "concurrency": concurrency,
         "thread_pool_size": thread_pool_size
     }
+
+# Pre-calculate default resource allocation
+DEFAULT_RESOURCE_ALLOCATION = calculate_resource_allocation()
+log.info(f"Default resource allocation: concurrency={DEFAULT_RESOURCE_ALLOCATION['concurrency']}, "
+         f"thread_pool_size={DEFAULT_RESOURCE_ALLOCATION['thread_pool_size']}")
+
+async def process_embeddings_async(
+    embedding_function,
+    texts: List[str],
+    prefix: Optional[str] = None,
+    user: Optional[Any] = None,
+    batch_size: Optional[int] = None,
+    max_concurrent: Optional[int] = None
+) -> List[List[float]]:
+    """
+    Process embeddings asynchronously with controlled concurrency.
+    
+    Args:
+        embedding_function: The function to generate embeddings
+        texts: List of texts to embed
+        prefix: Embedding prefix
+        user: User information
+        batch_size: Size of each batch (defaults to 32)
+        max_concurrent: Maximum number of concurrent batches (defaults to pre-calculated value)
+    """
+    # If parameters are not provided, use the pre-calculated values
+    if batch_size is None:
+        # Larger batch sizes are more efficient, but we want to balance across workers
+        batch_size = 32  # Default batch size regardless of workers
+    
+    if max_concurrent is None:
+        max_concurrent = DEFAULT_RESOURCE_ALLOCATION["concurrency"]
+        log.debug(f"Using default max_concurrent: {max_concurrent}")
+    
+    # Create a semaphore to limit concurrent operations
+    semaphore = asyncio.Semaphore(max_concurrent)
+    
+    # Use the pre-calculated thread pool size if not specified
+    thread_pool_size = DEFAULT_RESOURCE_ALLOCATION["thread_pool_size"]
+    log.debug(f"Using thread pool size: {thread_pool_size}")
+    thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=thread_pool_size)
+    
+    async def process_batch(batch):
+        # Acquire semaphore to limit concurrency
+        async with semaphore:
+            # Use thread pool for better performance
+            result = await asyncio.get_event_loop().run_in_executor(
+                thread_pool,
+                lambda: embedding_function(batch, prefix, user)
+            )
+            return result
+    
+    # Split texts into batches
+    batches = []
+    for i in range(0, len(texts), batch_size):
+        batches.append(texts[i:i + batch_size])
+    
+    log.debug(f"Processing {len(texts)} texts in {len(batches)} batches with max {max_concurrent} concurrent")
+    
+    # Create tasks for all batches
+    tasks = [process_batch(batch) for batch in batches]
+    
+    # Execute all tasks concurrently and gather results
+    try:
+        batch_results = await asyncio.gather(*tasks)
+        
+        # Flatten results from all batches
+        all_embeddings = []
+        for result in batch_results:
+            if isinstance(result, list):
+                all_embeddings.extend(result)
+        
+        return all_embeddings
+    finally:
+        # Make sure to shut down the thread pool
+        thread_pool.shutdown(wait=False)
 
 def get_embedding_function(
     embedding_engine,
