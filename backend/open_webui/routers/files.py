@@ -96,7 +96,12 @@ async def upload_file(
         filename = os.path.basename(unsanitized_filename)
 
         file_extension = os.path.splitext(filename)[1]
-        if request.app.state.config.ALLOWED_FILE_EXTENSIONS:
+        has_file_extensions = bool(
+            request.app.state.config.ALLOWED_FILE_EXTENSIONS
+            and request.app.state.config.ALLOWED_FILE_EXTENSIONS != ['']
+        )
+        if has_file_extensions:
+            print("Extensions set value " + str(request.app.state.config.ALLOWED_FILE_EXTENSIONS))
             if file_extension not in request.app.state.config.ALLOWED_FILE_EXTENSIONS:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
