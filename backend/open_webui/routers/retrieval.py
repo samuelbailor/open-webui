@@ -1025,12 +1025,41 @@ async def save_docs_to_vector_db(
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
         )
 
-        embeddings = embedding_function(
-            list(map(lambda x: x.replace("\n", " "), texts)),
-            prefix=RAG_EMBEDDING_CONTENT_PREFIX,
-            user=user,
-        )
+        # Check if we have a file_id in metadata for caching
+        cached_embeddings = None
+        if metadata and "file_id" in metadata and "updated_at" in metadata:
+            cached_embeddings = embedding_cache.get(metadata["file_id"], metadata["updated_at"])
+        
+        if cached_embeddings is not None:
+            log.info(f"Using cached embeddings for file {metadata.get('file_id')}")
+            embeddings = cached_embeddings
+            
+            # We have cached embeddings, but we still need to create a collection for this specific file
+            # Each file needs its own collection in the current architecture, even if the content is identical
+            # This is because the collection name is derived from the file ID, and queries are made to this specific collection
+            # However, we can skip the expensive embedding generation step, which is the main bottleneck
+            
+            # In the future, we could modify the architecture to use a content-hash-based collection name
+            # instead of a file-id-based collection name, which would allow true deduplication
+        else:
+            # Clean texts by replacing newlines with spaces
+            cleaned_texts = list(map(lambda x: x.replace("\n", " "), texts))
+            
+            # Process embeddings asynchronously with dynamic resource allocation
+            embeddings = await process_embeddings_async(
+                embedding_function,
+                cleaned_texts,
+                prefix=RAG_EMBEDDING_CONTENT_PREFIX,
+                user=user,
+                # Let the function dynamically determine optimal parameters
+                # based on system resources and worker count
+            )
+            
+            # Cache the embeddings if we have file metadata
+            if metadata and "file_id" in metadata and "updated_at" in metadata:
+                embedding_cache.set(metadata["file_id"], metadata["updated_at"], embeddings)
 
+        # Create items for vector DB insertion
         items = [
             {
                 "id": str(uuid.uuid4()),
@@ -1196,6 +1225,7 @@ async def process_file(
                         "file_id": file.id,
                         "name": file.filename,
                         "hash": hash,
+                        "updated_at": file.updated_at,  # Add updated_at for caching
                     },
                     add=(True if form_data.collection_name else False),
                     user=user,
@@ -1681,8 +1711,7 @@ async def process_web_search(
             )
 
             try:
-                await run_in_threadpool(
-                    save_docs_to_vector_db,
+                await save_docs_to_vector_db(
                     request,
                     docs,
                     collection_name,
