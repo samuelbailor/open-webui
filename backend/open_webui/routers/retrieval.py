@@ -925,10 +925,15 @@ async def save_docs_to_vector_db(
 
     # Check if entries with the same hash (metadata.hash) already exist
     if metadata and "hash" in metadata:
-        result = VECTOR_DB_CLIENT.query(
-            collection_name=collection_name,
-            filter={"hash": metadata["hash"]},
-        )
+        # First check if the collection exists before querying
+        if VECTOR_DB_CLIENT.has_collection(collection_name=collection_name):
+            result = VECTOR_DB_CLIENT.query(
+                collection_name=collection_name,
+                filter={"hash": metadata["hash"]},
+            )
+        else:
+            log.info(f"Collection {collection_name} does not exist yet, skipping duplicate check")
+            result = None
 
         if result is not None:
             existing_doc_ids = result.ids[0]
