@@ -5,6 +5,7 @@ import os
 import shutil
 import asyncio
 
+from open_webui.retrieval.cache import embedding_cache
 
 import uuid
 from datetime import datetime
@@ -74,6 +75,7 @@ from open_webui.retrieval.utils import (
     query_collection_with_hybrid_search,
     query_doc,
     query_doc_with_hybrid_search,
+    process_embeddings_async,
 )
 from open_webui.utils.misc import (
     calculate_sha256_string,
@@ -918,7 +920,7 @@ async def update_rag_config(
 ####################################
 
 
-def save_docs_to_vector_db(
+async def save_docs_to_vector_db(
     request: Request,
     docs,
     collection_name,
@@ -1079,7 +1081,7 @@ class ProcessFileForm(BaseModel):
 
 
 @router.post("/process/file")
-def process_file(
+async def process_file(
     request: Request,
     form_data: ProcessFileForm,
     user=Depends(get_verified_user),
@@ -1211,7 +1213,7 @@ def process_file(
 
         if not request.app.state.config.BYPASS_EMBEDDING_AND_RETRIEVAL:
             try:
-                result = save_docs_to_vector_db(
+                result = await save_docs_to_vector_db(
                     request,
                     docs=docs,
                     collection_name=collection_name,
@@ -1269,7 +1271,7 @@ class ProcessTextForm(BaseModel):
 
 
 @router.post("/process/text")
-def process_text(
+async def process_text(
     request: Request,
     form_data: ProcessTextForm,
     user=Depends(get_verified_user),
@@ -1287,7 +1289,7 @@ def process_text(
     text_content = form_data.content
     log.debug(f"text_content: {text_content}")
 
-    result = save_docs_to_vector_db(request, docs, collection_name, user=user)
+    result = await save_docs_to_vector_db(request, docs, collection_name, user=user)
     if result:
         return {
             "status": True,
@@ -1302,7 +1304,7 @@ def process_text(
 
 
 @router.post("/process/youtube")
-def process_youtube_video(
+async def process_youtube_video(
     request: Request, form_data: ProcessUrlForm, user=Depends(get_verified_user)
 ):
     try:
@@ -1320,7 +1322,7 @@ def process_youtube_video(
         content = " ".join([doc.page_content for doc in docs])
         log.debug(f"text_content: {content}")
 
-        save_docs_to_vector_db(
+        await save_docs_to_vector_db(
             request, docs, collection_name, overwrite=True, user=user
         )
 
@@ -1346,7 +1348,7 @@ def process_youtube_video(
 
 
 @router.post("/process/web")
-def process_web(
+async def process_web(
     request: Request, form_data: ProcessUrlForm, user=Depends(get_verified_user)
 ):
     try:
@@ -1365,7 +1367,7 @@ def process_web(
         log.debug(f"text_content: {content}")
 
         if not request.app.state.config.BYPASS_WEB_SEARCH_EMBEDDING_AND_RETRIEVAL:
-            save_docs_to_vector_db(
+            await save_docs_to_vector_db(
                 request, docs, collection_name, overwrite=True, user=user
             )
         else:
