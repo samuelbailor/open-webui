@@ -4,6 +4,7 @@ import mimetypes
 import os
 import shutil
 import asyncio
+import time
 
 from open_webui.retrieval.cache import embedding_cache
 
@@ -920,7 +921,7 @@ async def save_docs_to_vector_db(
         return ", ".join(docs_info)
 
     log.info(
-        f"save_docs_to_vector_db: document {_get_docs_info(docs)} {collection_name}"
+        f"starting save_docs_to_vector_db: document {_get_docs_info(docs)} {collection_name}"
     )
 
     # Check if entries with the same hash (metadata.hash) already exist
@@ -941,6 +942,9 @@ async def save_docs_to_vector_db(
                 log.info(f"Document with hash {metadata['hash']} already exists")
                 raise ValueError(ERROR_MESSAGES.DUPLICATE_CONTENT)
 
+    # Time profiling (only in dev mode)
+    start_time = time.time()
+    
     if split:
         if request.app.state.config.TEXT_SPLITTER in ["", "character"]:
             text_splitter = RecursiveCharacterTextSplitter(
@@ -964,6 +968,12 @@ async def save_docs_to_vector_db(
             raise ValueError(ERROR_MESSAGES.DEFAULT("Invalid text splitter"))
 
         docs = text_splitter.split_documents(docs)
+
+    # Time profiling (only in dev mode)
+    if start_time is not None:
+        end_time = time.time()
+        elapsed_time = end_time - start_time
+        log.info(f"Text splitter took {elapsed_time:.4f} seconds to run")
 
     if len(docs) == 0:
         raise ValueError(ERROR_MESSAGES.EMPTY_CONTENT)
@@ -1025,6 +1035,9 @@ async def save_docs_to_vector_db(
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
         )
 
+        # Time profiling (only in dev mode)
+        start_time = time.time()
+
         # Check if we have a file_id in metadata for caching
         cached_embeddings = None
         if metadata and "file_id" in metadata and "updated_at" in metadata:
@@ -1059,6 +1072,12 @@ async def save_docs_to_vector_db(
             if metadata and "file_id" in metadata and "updated_at" in metadata:
                 embedding_cache.set(metadata["file_id"], metadata["updated_at"], embeddings)
 
+        # Time profiling (only in dev mode)
+        if start_time is not None:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            log.info(f"Embeddings took {elapsed_time:.4f} seconds to run")
+
         # Create items for vector DB insertion
         items = [
             {
@@ -1070,10 +1089,19 @@ async def save_docs_to_vector_db(
             for idx, text in enumerate(texts)
         ]
 
+        # Time profiling (only in dev mode)
+        start_time = time.time()
+            
         VECTOR_DB_CLIENT.insert(
             collection_name=collection_name,
             items=items,
         )
+
+        # Time profiling (only in dev mode)
+        if start_time is not None:
+            end_time = time.time()
+            elapsed_time = end_time - start_time
+            log.info(f"Insert into Vector DB took {elapsed_time:.4f} seconds to run")
 
         return True
     except Exception as e:
@@ -1160,6 +1188,8 @@ async def process_file(
         else:
             # Process the file and save the content
             # Usage: /files/
+            start_time = time.time()
+
             file_path = file.path
             if file_path:
                 file_path = Storage.get_file(file_path)
@@ -1173,7 +1203,7 @@ async def process_file(
                     DOCUMENT_INTELLIGENCE_ENDPOINT=request.app.state.config.DOCUMENT_INTELLIGENCE_ENDPOINT,
                     DOCUMENT_INTELLIGENCE_KEY=request.app.state.config.DOCUMENT_INTELLIGENCE_KEY,
                     MISTRAL_OCR_API_KEY=request.app.state.config.MISTRAL_OCR_API_KEY,
-                )
+                )               
                 docs = loader.load(
                     file.filename, file.meta.get("content_type"), file_path
                 )
@@ -1204,6 +1234,11 @@ async def process_file(
                         },
                     )
                 ]
+                
+            if start_time is not None:
+                end_time = time.time()
+                elapsed_time = end_time - start_time
+                log.info(f"Parsing file took {elapsed_time:.4f} seconds to run")
             text_content = " ".join([doc.page_content for doc in docs])
 
         log.debug(f"text_content: {text_content}")
