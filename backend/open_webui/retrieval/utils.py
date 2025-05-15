@@ -6,6 +6,7 @@ from typing import Optional, Union, List, Any
 
 import requests
 import hashlib
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 from huggingface_hub import snapshot_download
@@ -471,10 +472,13 @@ async def process_embeddings_async(
         # Acquire semaphore to limit concurrency
         async with semaphore:
             # Use thread pool for better performance
+            start_time = time.time()
             result = await asyncio.get_event_loop().run_in_executor(
                 thread_pool,
                 lambda: embedding_function(batch, prefix, user)
             )
+            elapsed_time = time.time() - start_time
+            log.info(f"Batch of {len(batch)} texts processed in {elapsed_time:.4f} seconds")
             return result
     
     # Split texts into batches
@@ -482,7 +486,7 @@ async def process_embeddings_async(
     for i in range(0, len(texts), batch_size):
         batches.append(texts[i:i + batch_size])
     
-    log.debug(f"Processing {len(texts)} texts in {len(batches)} batches with max {max_concurrent} concurrent")
+    log.info(f"Processing {len(texts)} texts in {len(batches)} batches with max {max_concurrent} concurrent")
     
     # Create tasks for all batches
     tasks = [process_batch(batch) for batch in batches]
