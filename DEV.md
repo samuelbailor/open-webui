@@ -1,7 +1,7 @@
 ## Install Frontend:
 1. cp -RPp .env.example .env
-2. cd open-webui
-3. npm install
+2. npm install
+    - run `nvm use` if nvm is installed to sync node version
 
 ## Install Backend (in uv environment)
 1. cd backend
