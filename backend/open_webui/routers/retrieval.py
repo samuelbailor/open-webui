@@ -291,6 +291,8 @@ async def update_embedding_config(
                     form_data.ollama_config.key
                 )
 
+            # RAG_EMBEDDING_BATCH_SIZE determines the "API request batch size" -
+            # how many texts are sent in a single HTTP request to the embedding API
             request.app.state.config.RAG_EMBEDDING_BATCH_SIZE = (
                 form_data.embedding_batch_size
             )
@@ -314,7 +316,9 @@ async def update_embedding_config(
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
                 else request.app.state.config.RAG_OLLAMA_API_KEY
             ),
-            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            # RAG_EMBEDDING_BATCH_SIZE is passed as api_request_batch_size
+            # This controls how many texts are sent in a single HTTP request to the embedding API
+            api_request_batch_size=request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
         )
 
         return {
@@ -1032,7 +1036,9 @@ async def save_docs_to_vector_db(
                 if request.app.state.config.RAG_EMBEDDING_ENGINE == "openai"
                 else request.app.state.config.RAG_OLLAMA_API_KEY
             ),
-            request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+            # RAG_EMBEDDING_BATCH_SIZE is passed as api_request_batch_size
+            # This controls how many texts are sent in a single HTTP request to the embedding API
+            api_request_batch_size=request.app.state.config.RAG_EMBEDDING_BATCH_SIZE,
         )
 
         # Time profiling (only in dev mode)

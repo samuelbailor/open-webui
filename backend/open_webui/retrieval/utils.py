@@ -404,27 +404,55 @@ def calculate_resource_allocation(worker_count: int = WORKER_COUNT, system_cores
     """
     Calculate optimal resource allocation based on system resources and worker count.
     
+    This function determines three key parameters for concurrent processing:
+    
+    1. concurrency: How many batches can be processed simultaneously.
+       This is dynamically calculated based on available CPU cores, but capped
+       between 2-6 to prevent system overload.
+    
+    2. thread_pool_size: How many threads to allocate in the thread pool.
+       This is typically 2-3x the concurrency value to ensure efficient thread
+       utilization while preventing excessive context switching.
+       
+    3. concurrency_batch_size: The size of each batch, i.e., how many texts to include 
+       in each batch. This is dynamically calculated based on available CPU cores and memory.
+       Larger systems with more cores can efficiently process larger batches.
+    
     Args:
         worker_count: Number of worker processes (defaults to module-level WORKER_COUNT)
         system_cores: Number of CPU cores available (defaults to module-level SYSTEM_CORES)
         
     Returns:
-        Dictionary with concurrency and thread pool size values
+        Dictionary with concurrency, thread_pool_size, and concurrency_batch_size values
     """
     # Calculate cores per worker (minimum 1)
     cores_per_worker = max(1, system_cores // worker_count)
     
     # Calculate concurrency - balance between throughput and resource contention
+    # This determines how many batches can be processed simultaneously
     # We use a balanced approach that works well for both I/O and CPU bound operations
+    # Limited to between 2 and 6 concurrent batches regardless of system size
     concurrency = max(2, min(cores_per_worker + 1, 6))
     
     # Calculate thread pool size - typically 2-3x concurrency is a good balance
     # but capped based on available cores
+    # This determines the size of the thread pool used for processing
     thread_pool_size = max(5, min(concurrency * 2, cores_per_worker * 3))
+    
+    # Calculate optimal concurrency batch size based on system resources
+    # The formula scales batch size with available cores, with reasonable min/max bounds
+    # - Base size of 16 for single-core systems
+    # - Scales up with more cores available per worker
+    # - Caps at 64 to prevent excessive memory usage
+    # This approach balances efficiency (larger batches) with resource constraints
+    concurrency_batch_size = max(16, min(16 * cores_per_worker, 64))
+    
+    log.debug(f"Calculated concurrency_batch_size={concurrency_batch_size} based on {cores_per_worker} cores per worker")
     
     return {
         "concurrency": concurrency,
-        "thread_pool_size": thread_pool_size
+        "thread_pool_size": thread_pool_size,
+        "concurrency_batch_size": concurrency_batch_size
     }
 
 # Pre-calculate default resource allocation
@@ -437,30 +465,57 @@ async def process_embeddings_async(
     texts: List[str],
     prefix: Optional[str] = None,
     user: Optional[Any] = None,
-    batch_size: Optional[int] = None,
+    concurrency_batch_size: Optional[int] = None,
     max_concurrent: Optional[int] = None
 ) -> List[List[float]]:
     """
     Process embeddings asynchronously with controlled concurrency.
+    
+    This function implements two levels of batching for optimal performance:
+    
+    1. Concurrency Batches: The input texts are divided into batches of size `concurrency_batch_size`.
+       Each batch is processed as a single unit by one thread. For example, with 320 texts and
+       concurrency_batch_size=32, we create 10 separate batches.
+       
+       The concurrency_batch_size is dynamically calculated based on system resources:
+       - Scales with available CPU cores per worker
+       - Ranges from 16 (minimum) to 64 (maximum)
+       - Larger systems with more cores use larger batch sizes for efficiency
+    
+    2. Concurrent Execution: We process multiple batches simultaneously, controlled by `max_concurrent`.
+       This limits how many batches can be in-flight at once. For example, with max_concurrent=4,
+       only 4 batches (out of our 10) would be processed simultaneously.
+    
+    This two-level approach allows for efficient resource utilization:
+    - `concurrency_batch_size` optimizes the workload size for each thread
+    - `max_concurrent` prevents overloading the system with too many parallel operations
+    
+    Note: This is different from "API request batches" which are created in generate_multiple
+    and determine how many texts are sent in a single HTTP request to the embedding API.
     
     Args:
         embedding_function: The function to generate embeddings
         texts: List of texts to embed
         prefix: Embedding prefix
         user: User information
-        batch_size: Size of each batch (defaults to 32)
+        concurrency_batch_size: Size of each concurrency batch (defaults to dynamically calculated value)
         max_concurrent: Maximum number of concurrent batches (defaults to pre-calculated value)
     """
     # If parameters are not provided, use the pre-calculated values
-    if batch_size is None:
-        # Larger batch sizes are more efficient, but we want to balance across workers
-        batch_size = 32  # Default batch size regardless of workers
+    if concurrency_batch_size is None:
+        # This determines how many texts are in each batch processed by a single thread
+        # Dynamically calculated based on system resources
+        concurrency_batch_size = DEFAULT_RESOURCE_ALLOCATION["concurrency_batch_size"]
+        log.debug(f"Using dynamically calculated concurrency_batch_size: {concurrency_batch_size}")
     
     if max_concurrent is None:
+        # This determines how many batches can be processed simultaneously
+        # Dynamically calculated based on system resources (typically 2-6)
         max_concurrent = DEFAULT_RESOURCE_ALLOCATION["concurrency"]
         log.debug(f"Using default max_concurrent: {max_concurrent}")
     
     # Create a semaphore to limit concurrent operations
+    # This ensures no more than max_concurrent batches are being processed at any given time
     semaphore = asyncio.Semaphore(max_concurrent)
     
     # Use the pre-calculated thread pool size if not specified
@@ -469,10 +524,13 @@ async def process_embeddings_async(
     thread_pool = concurrent.futures.ThreadPoolExecutor(max_workers=thread_pool_size)
     
     async def process_batch(batch):
-        # Acquire semaphore to limit concurrency
+        # Acquire semaphore to limit concurrency - this blocks if max_concurrent batches are already running
+        # Once a running batch completes, the semaphore is released and a new batch can start
         async with semaphore:
             # Use thread pool for better performance
             start_time = time.time()
+            # This is where the batch gets sent to the embedding function
+            # The embedding function may further batch the texts for API requests
             result = await asyncio.get_event_loop().run_in_executor(
                 thread_pool,
                 lambda: embedding_function(batch, prefix, user)
@@ -481,15 +539,17 @@ async def process_embeddings_async(
             log.info(f"Batch of {len(batch)} texts processed in {elapsed_time:.4f} seconds")
             return result
     
-    # Split texts into batches
-    batches = []
-    for i in range(0, len(texts), batch_size):
-        batches.append(texts[i:i + batch_size])
+    # Split texts into concurrency batches (processed by different threads)
+    # Each batch contains concurrency_batch_size texts (or fewer for the last batch)
+    concurrency_batches = []
+    for i in range(0, len(texts), concurrency_batch_size):
+        concurrency_batches.append(texts[i:i + concurrency_batch_size])
     
-    log.info(f"Processing {len(texts)} texts in {len(batches)} batches with max {max_concurrent} concurrent")
+    log.info(f"Processing {len(texts)} texts in {len(concurrency_batches)} concurrency batches")
+    log.info(f"Each batch contains up to {concurrency_batch_size} texts, with max {max_concurrent} batches running concurrently")
     
-    # Create tasks for all batches
-    tasks = [process_batch(batch) for batch in batches]
+    # Create tasks for all concurrency batches
+    tasks = [process_batch(batch) for batch in concurrency_batches]
     
     # Execute all tasks concurrently and gather results
     try:
@@ -512,8 +572,22 @@ def get_embedding_function(
     embedding_function,
     url,
     key,
-    embedding_batch_size,
+    api_request_batch_size,
 ):
+    """
+    Creates an embedding function based on the specified engine.
+    
+    For Ollama/OpenAI engines, this wraps the embedding function with generate_multiple
+    which handles API request batching - grouping texts into batches for efficient API calls.
+    
+    Args:
+        embedding_engine: The embedding engine to use (e.g., "", "ollama", "openai")
+        embedding_model: The model name to use for embeddings
+        embedding_function: The base embedding function (for non-API engines)
+        url: The API URL for API-based engines
+        key: The API key for API-based engines
+        api_request_batch_size: Number of texts to include in a single API request batch
+    """
     if embedding_engine == "":
         return lambda query, prefix=None, user=None: embedding_function.encode(
             query, **({"prompt": prefix} if prefix else {})
@@ -530,18 +604,33 @@ def get_embedding_function(
         )
 
         def generate_multiple(query, prefix, user, func):
+            """
+            Handles API request batching for embedding generation.
+
+            The number of texts sent in a single HHTP request to the embedding API is controlled 
+            by api_request_batch_size (formerly embedding_batch_size), which is set in the UI.
+            This function splits the input query into smaller batches of size api_request_batch_size.
+            """
             if isinstance(query, list):
                 embeddings = []
-                for i in range(0, len(query), embedding_batch_size):
+                # Split the query into API request batches based on api_request_batch_size
+                for i in range(0, len(query), api_request_batch_size):
+                    # Create an API request batch
+                    api_request_batch = query[i : i + api_request_batch_size]
+                    log.debug(f"Processing API request batch of size {len(api_request_batch)}")
+                    
+                    # Send the API request batch to the embedding API as a single HTTP request
+                    # This is more efficient than sending each text individually
                     embeddings.extend(
                         func(
-                            query[i : i + embedding_batch_size],
+                            api_request_batch,
                             prefix=prefix,
                             user=user,
                         )
                     )
                 return embeddings
             else:
+                # Single text, no batching needed
                 return func(query, prefix, user)
 
         return lambda query, prefix=None, user=None: generate_multiple(
@@ -771,9 +860,23 @@ def generate_openai_batch_embeddings(
     prefix: str = None,
     user: UserModel = None,
 ) -> Optional[list[list[float]]]:
+    """
+    Generate embeddings for a batch of texts using OpenAI API in a single HTTP request.
+    
+    This function sends an API request batch (multiple texts) to the OpenAI API
+    in a single HTTP request for efficient processing.
+    
+    Args:
+        model: The model name to use for embeddings
+        texts: List of text strings (API request batch)
+        url: The OpenAI API URL
+        key: The OpenAI API key
+        prefix: Optional prefix for the texts
+        user: Optional user information
+    """
     try:
         log.debug(
-            f"generate_openai_batch_embeddings:model {model} batch size: {len(texts)}"
+            f"generate_openai_batch_embeddings: model={model}, API request batch size={len(texts)}"
         )
         json_data = {"input": texts, "model": model}
         if isinstance(RAG_EMBEDDING_PREFIX_FIELD_NAME, str) and isinstance(prefix, str):
@@ -816,9 +919,23 @@ def generate_ollama_batch_embeddings(
     prefix: str = None,
     user: UserModel = None,
 ) -> Optional[list[list[float]]]:
+    """
+    Generate embeddings for a batch of texts using Ollama API in a single HTTP request.
+    
+    This function sends an API request batch (multiple texts) to the Ollama API
+    in a single HTTP request for efficient processing.
+    
+    Args:
+        model: The model name to use for embeddings
+        texts: List of text strings (API request batch)
+        url: The Ollama API URL
+        key: The Ollama API key
+        prefix: Optional prefix for the texts
+        user: Optional user information
+    """
     try:
         log.debug(
-            f"generate_ollama_batch_embeddings:model {model} batch size: {len(texts)}"
+            f"generate_ollama_batch_embeddings: model={model}, API request batch size={len(texts)}"
         )
         json_data = {"input": texts, "model": model}
         if isinstance(RAG_EMBEDDING_PREFIX_FIELD_NAME, str) and isinstance(prefix, str):
@@ -861,9 +978,29 @@ def generate_embeddings(
     prefix: Union[str, None] = None,
     **kwargs,
 ):
+    """
+    Generate embeddings for text using the specified engine and model.
+    
+    This function handles both single texts and batches of texts (API request batches).
+    When text is a list, it represents an API request batch - multiple texts to be
+    embedded in a single API call.
+    
+    Args:
+        engine: The embedding engine to use (e.g., "ollama", "openai")
+        model: The model name to use for embeddings
+        text: Either a single text string or a list of text strings (API request batch)
+        prefix: Optional prefix to add to the text
+        **kwargs: Additional arguments including url, key, and user
+    """
     url = kwargs.get("url", "")
     key = kwargs.get("key", "")
     user = kwargs.get("user")
+
+    # Log whether we're processing a single text or an API request batch
+    if isinstance(text, list):
+        log.debug(f"generate_embeddings: processing API request batch of {len(text)} texts with prefix={prefix}")
+    else:
+        log.debug(f"generate_embeddings: processing single text with prefix={prefix}")
 
     if prefix is not None and RAG_EMBEDDING_PREFIX_FIELD_NAME is None:
         if isinstance(text, list):
