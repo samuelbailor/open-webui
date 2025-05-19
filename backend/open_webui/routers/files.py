@@ -96,12 +96,11 @@ async def upload_file(
         filename = os.path.basename(unsanitized_filename)
 
         file_extension = os.path.splitext(filename)[1]
-        has_file_extensions = bool(
-            request.app.state.config.ALLOWED_FILE_EXTENSIONS
-            and request.app.state.config.ALLOWED_FILE_EXTENSIONS != ['']
-        )
-        if has_file_extensions:
-            print("Extensions set value " + str(request.app.state.config.ALLOWED_FILE_EXTENSIONS))
+        if request.app.state.config.ALLOWED_FILE_EXTENSIONS:
+            request.app.state.config.ALLOWED_FILE_EXTENSIONS = [
+                ext for ext in request.app.state.config.ALLOWED_FILE_EXTENSIONS if ext
+            ]
+
             if file_extension not in request.app.state.config.ALLOWED_FILE_EXTENSIONS:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -141,16 +140,9 @@ async def upload_file(
         if process:
             try:
                 if file.content_type:
-                    if file.content_type.startswith(
-                        (
-                            "audio/mpeg",
-                            "audio/wav",
-                            "audio/ogg",
-                            "audio/x-m4a",
-                            "audio/webm",
-                            "video/webm",
-                        )
-                    ):
+                    if file.content_type.startswith("audio/") or file.content_type in {
+                        "video/webm"
+                    }:
                         file_path = Storage.get_file(file_path)
                         result = transcribe(request, file_path)
 
