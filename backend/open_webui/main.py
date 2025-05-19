@@ -788,7 +788,9 @@ app.state.EMBEDDING_FUNCTION = get_embedding_function(
         if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
         else app.state.config.RAG_OLLAMA_API_KEY
     ),
-    app.state.config.RAG_EMBEDDING_BATCH_SIZE,
+    # RAG_EMBEDDING_BATCH_SIZE is passed as api_request_batch_size
+    # This controls how many texts are sent in a single HTTP request to the embedding API
+    api_request_batch_size=app.state.config.RAG_EMBEDDING_BATCH_SIZE,
 )
 
 ########################################
