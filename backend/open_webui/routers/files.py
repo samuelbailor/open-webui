@@ -146,7 +146,7 @@ async def upload_file(
                         file_path = Storage.get_file(file_path)
                         result = transcribe(request, file_path)
 
-                        process_file(
+                        await process_file(
                             request,
                             ProcessFileForm(file_id=id, content=result.get("text", "")),
                             user=user,
@@ -159,7 +159,7 @@ async def upload_file(
                         "video/ogg",
                         "video/quicktime",
                     ]:
-                        process_file(request, ProcessFileForm(file_id=id), user=user)
+                        await process_file(request, ProcessFileForm(file_id=id), user=user)
                 else:
                     log.info(
                         f"File type {file.content_type} is not provided, but trying to process anyway"
